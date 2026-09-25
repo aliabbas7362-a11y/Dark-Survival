@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.DarkSurvival" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/night_black</item>
+        <item name="android:statusBarColor">@color/night_black</item>
+        <item name="android:navigationBarColor">@color/night_black</item>
+    </style>
+</resources>
