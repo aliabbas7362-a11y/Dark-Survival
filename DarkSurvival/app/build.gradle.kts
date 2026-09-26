@@ -11,17 +11,47 @@ android {
         applicationId = "com.blindtechabbas.darksurvival"
         minSdk = 24
         targetSdk = 34
-        versionCode = 20
-        versionName = "2.9"
+        versionCode = 21
+        versionName = "3.0"
     }
 
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+    // FIXED SIGNING (v3.0): every APK from this machine is signed with the
+    // SAME keystore, so version upgrades install directly over old versions
+    // and a package-signature conflict can never happen again.
+    // The keystore file is NOT committed to git (.gitignore) — if it is
+    // missing (e.g. GitHub Actions), builds fall back to default signing.
+    val ksFile = file("darksurvival-release.keystore")
+    if (ksFile.exists()) {
+        signingConfigs {
+            create("release") {
+                storeFile = ksFile
+                storePassword = "DarkSurvival@2026"
+                keyAlias = "darksurvival"
+                keyPassword = "DarkSurvival@2026"
+            }
+        }
+        buildTypes {
+            debug {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            release {
+                isMinifyEnabled = false
+                signingConfig = signingConfigs.getByName("release")
+                proguardFiles(
+                    getDefaultProguardFile("proguard-android-optimize.txt"),
+                    "proguard-rules.pro"
+                )
+            }
+        }
+    } else {
+        buildTypes {
+            release {
+                isMinifyEnabled = false
+                proguardFiles(
+                    getDefaultProguardFile("proguard-android-optimize.txt"),
+                    "proguard-rules.pro"
+                )
+            }
         }
     }
     compileOptions {
