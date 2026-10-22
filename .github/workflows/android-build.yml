@@ -1,7 +1,9 @@
-name: Android Build & Release
+name: Android Build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "main" ]
 
 jobs:
   build:
@@ -18,9 +20,9 @@ jobs:
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
-          cache: gradle
+          cache: 'gradle'
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
