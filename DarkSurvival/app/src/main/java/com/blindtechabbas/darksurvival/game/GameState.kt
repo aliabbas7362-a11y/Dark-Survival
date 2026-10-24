@@ -1,64 +1,68 @@
 package com.blindtechabbas.darksurvival.game
 
-/** App screens (simple state-based navigation, no extra dependency). */
-sealed class Screen {
-    object MainMenu : Screen()
-    object ChapterSelect : Screen()
-    data class Match(val chapterId: Int) : Screen()
-    object Settings : Screen()
-}
+enum class Screen { GATE, MAIN_MENU, SETTINGS, MATCH, RESULT }
 
-data class GameUiState(
-    val player: Player = Player(),
-    val enemies: List<Enemy> = emptyList(),
-    val chapterId: Int = 1,
-    val unlockedChapters: Set<Int> = setOf(1),
-    val screen: Screen = Screen.MainMenu,
-    val lastAnnouncement: String = "",
-    val lastAnnounceMs: Long = 0L,
-    /** Bumped ONLY when a NEW announcement is made — TTS speaks on change. */
-    val announceEventId: Long = 0,
-    val lastSound: String = "",
-    val soundPan: Float = 0f,
-    val soundVolume: Float = 1f,
-    /** Bumped ONLY when a sound plays — independent of announcements. */
-    val soundEventId: Long = 0,
-    val soundEnabled: Boolean = true,
-    /** Sensor Mode: device tilt steers lanes (Settings toggle, persisted). */
-    val sensorEnabled: Boolean = false,
-    /** v2.8 CALIBRATION: captured neutral pitch/roll — everything relative
-     *  to this is idle. Persisted; the Calibrate button resets it. */
-    val sensorOffsetPitch: Float = 0f,
-    val sensorOffsetRoll: Float = 0f,
-    /** Master switch for ALL voice announcements (Settings toggle, persisted). */
-    val announcementsEnabled: Boolean = true,
-    /** PUBG-style heli + parachute intro — gameplay input unlocks after it. */
-    val intro: Boolean = false,
-    val kills: Int = 0,
-    /** v2.4 — single source of truth: remaining = TOTAL_ENEMIES − killed. */
-    val killedEnemies: Int = 0,
-    /** Bumped ONLY on an enemy death transition (drives the death haptic). */
-    val deathEventId: Long = 0,
-    /** Bumped on match start — drives the dedicated HQ briefing player. */
-    val briefingEventId: Long = 0,
-    val gameOver: Boolean = false,
-    /** WIN: all waves eliminated — mirrors gameOver but a result screen. */
-    val victory: Boolean = false,
-    /** Seconds the match lasted (set on win/lose for the result screens). */
-    val elapsedSec: Int = 0,
-    val matchStartMs: Long = 0L,
-    /** Total enemies across ALL waves this match. */
-    val totalEnemies: Int = 0,
-    /** Current map zone index (0..4) along the linear path. */
-    val currentZone: Int = 0,
-    /** Bumped ONLY on a zone transition — ambience crossfade reacts to it. */
-    val zoneEventId: Long = 0,
-    /** River distance-attenuation volume (1 near Zone 2, fades away from it). */
-    val riverVol: Float = 1f,
-    /** v2.5 GRENADE HAZARD: lane index the grenade landed in (null = none). */
-    val grenadeLane: Int? = null,
-    /** Absolute time when the grenade explodes (2.0s dodge window). */
-    val grenadeExplodeAt: Long = 0L,
-    /** Bumped on grenade spawn — drives the pulsing haptic alert. */
-    val grenadeEventId: Long = 0
+enum class Phase { INTRO, COUNTDOWN, PLAYING }
+
+data class Hud(
+    val hp: Int = 100,
+    val weapon: String = "",
+    val ammo: String = "",
+    val enemies: Int = 0,
+    val time: String = "",
+    val zone: String = "",
+    val rations: Int = 3,
+    val crouching: Boolean = false
 )
+
+data class ResultInfo(
+    val won: Boolean,
+    val reason: String,
+    val kills: Int,
+    val seconds: Int,
+    val hp: Int
+)
+
+data class UiState(
+    val screen: Screen = Screen.GATE,
+    val phase: Phase = Phase.INTRO,
+    val countdown: Int = 0,
+    val talkBackOn: Boolean = false,
+    val menuIndex: Int = 0,
+    val hud: Hud = Hud(),
+    val result: ResultInfo? = null,
+    val speechFeedback: Boolean = true,
+    val announcements: Boolean = true,
+    val sensorOn: Boolean = false,
+    val engineLabel: String = "Default",
+    val speechRate: Float = 1.0f,
+    val speechVolume: Float = 1.0f,
+    val ttsOk: Boolean = true,
+    val paused: Boolean = false,
+    val exit: Boolean = false
+)
+
+fun onOff(b: Boolean): String = if (b) "on" else "off"
+
+fun rateLabel(r: Float): String = (Math.round(r * 10f) / 10f).toString()
+
+fun volumeLabel(v: Float): String = Math.round(v * 100f).toString() + " percent"
+
+/** The items of the current menu. Used by the screen to draw and by the view model to act. */
+fun menuLabels(ui: UiState): List<String> {
+    return when (ui.screen) {
+        Screen.MAIN_MENU -> listOf("Survive 24 Hours", "Settings", "Exit")
+        Screen.SETTINGS -> listOf(
+            "Speech feedback: " + onOff(ui.speechFeedback),
+            "Announcements: " + onOff(ui.announcements),
+            "Sensor: " + onOff(ui.sensorOn),
+            "Calibrate sensor",
+            "Speech engine: " + ui.engineLabel,
+            "Speech speed: " + rateLabel(ui.speechRate),
+            "Speech volume: " + volumeLabel(ui.speechVolume),
+            "Back"
+        )
+        Screen.RESULT -> listOf("Play again", "Main menu")
+        else -> emptyList()
+    }
+}

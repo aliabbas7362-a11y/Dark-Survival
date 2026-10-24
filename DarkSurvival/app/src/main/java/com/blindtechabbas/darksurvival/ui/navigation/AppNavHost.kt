@@ -1,40 +1,42 @@
 package com.blindtechabbas.darksurvival.ui.navigation
 
+import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import com.blindtechabbas.darksurvival.GameViewModel
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.blindtechabbas.darksurvival.game.GameViewModel
+import com.blindtechabbas.darksurvival.game.Screen
+import com.blindtechabbas.darksurvival.ui.screens.GateScreen
 import com.blindtechabbas.darksurvival.ui.screens.MainMenuScreen
 import com.blindtechabbas.darksurvival.ui.screens.MatchScreen
+import com.blindtechabbas.darksurvival.ui.screens.ResultScreen
 import com.blindtechabbas.darksurvival.ui.screens.SettingsScreen
 
+/**
+ * Screen switching. Back never leaves by accident: it asks for a second press
+ * (the view model speaks the question) and the game closes only after it says goodbye.
+ */
 @Composable
 fun AppNavHost(viewModel: GameViewModel) {
-    val navController = rememberNavController()
+    val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
-    NavHost(
-        navController = navController,
-        startDestination = "main_menu"
-    ) {
-        composable("main_menu") {
-            MainMenuScreen(
-                vm = viewModel,
-                onStartMatch = { navController.navigate("match") },
-                onOpenSettings = { navController.navigate("settings") }
-            )
+    BackHandler(enabled = true) { viewModel.onBack() }
+
+    LaunchedEffect(ui.exit) {
+        if (ui.exit) {
+            (context as? Activity)?.finish()
         }
-        composable("match") {
-            MatchScreen(
-                vm = viewModel,
-                onBack = { navController.popBackStack() }
-            )
-        }
-        composable("settings") {
-            SettingsScreen(
-                vm = viewModel,
-                onBack = { navController.popBackStack() }
-            )
-        }
+    }
+
+    when (ui.screen) {
+        Screen.GATE -> GateScreen(viewModel)
+        Screen.MAIN_MENU -> MainMenuScreen(viewModel)
+        Screen.SETTINGS -> SettingsScreen(viewModel)
+        Screen.MATCH -> MatchScreen(viewModel)
+        Screen.RESULT -> ResultScreen(viewModel)
     }
 }

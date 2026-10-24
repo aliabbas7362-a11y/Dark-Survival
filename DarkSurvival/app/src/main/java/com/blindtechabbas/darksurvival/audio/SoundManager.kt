@@ -4,23 +4,152 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.SoundPool
-import com.blindtechabbas.darksurvival.R
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import com.blindtechabbas.darksurvival.game.Zones
+import kotlin.math.max
+import kotlin.math.min
+
+private fun killMp(mp: MediaPlayer) {
+    try {
+        mp.stop()
+    } catch (_: Exception) {
+    }
+    try {
+        mp.release()
+    } catch (_: Exception) {
+    }
+}
+
+private class Slot(val mp: MediaPlayer, var cur: Float, var target: Float, var dying: Boolean)
 
 /**
- * SoundManager — all SFX preloaded at app start.
- * v1.5 FIX: the previous build forgot to actually save the loaded SoundPool
- * sample ids (`sampleIdByKey`), so every play looked up an empty map and
- * silently played NOTHING — only the MediaPlayer ambience kept looping.
- * That bug is fixed here: ids are stored, and plays are queued until all
- * sounds finish loading so not even an early tap can fail.
- * Player footstep plays loud and centered.
+ * One looping background bed that can crossfade to another bed.
+ * Every player that is fading out is tracked and released, so no "ghost"
+ * ambience can stay behind (that was a bug in the old version).
+ */
+private class AmbLayer(private val ctx: Context, private val handler: Handler) {
+    private val slots = ArrayList<Slot>()
+    private var activeKey: String? = null
+    private var level = 0.25f
+    private var ticking = false
+
+    private val ticker: Runnable = object : Runnable {
+        override fun run() {
+            val iter = slots.iterator()
+            while (iter.hasNext()) {
+                val s = iter.next()
+                val step = max(level, 0.15f) * 0.05f
+                if (s.cur < s.target) {
+                    s.cur = min(s.target, s.cur + step)
+                } else if (s.cur > s.target) {
+                    s.cur = max(s.target, s.cur - step)
+                }
+                try {
+                    s.mp.setVolume(s.cur, s.cur)
+                } catch (_: Exception) {
+                }
+                if (s.dying && s.cur <= 0.005f) {
+                    killMp(s.mp)
+                    iter.remove()
+                }
+            }
+            if (slots.isEmpty()) {
+                ticking = false
+            } else {
+                handler.postDelayed(this, 100L)
+            }
+        }
+    }
+
+    private fun kick() {
+        if (!ticking) {
+            ticking = true
+            handler.postDelayed(ticker, 100L)
+        }
+    }
+
+    fun play(resName: String, vol: Float) {
+        if (resName == activeKey) {
+            setLevel(vol)
+            return
+        }
+        for (s in slots) {
+            s.dying = true
+            s.target = 0f
+        }
+        while (slots.size > 3) {
+            killMp(slots[0].mp)
+            slots.removeAt(0)
+        }
+        val id = ctx.resources.getIdentifier(resName, "raw", ctx.packageName)
+        if (id == 0) {
+            activeKey = null
+            kick()
+            return
+        }
+        val mp: MediaPlayer? = try {
+            MediaPlayer.create(ctx, id)?.apply {
+                isLooping = true
+                setVolume(0f, 0f)
+                start()
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (mp == null) {
+            activeKey = null
+            kick()
+            return
+        }
+        level = vol
+        slots.add(Slot(mp, 0f, vol, false))
+        activeKey = resName
+        kick()
+    }
+
+    fun setLevel(vol: Float) {
+        level = vol
+        for (s in slots) {
+            if (!s.dying) s.target = vol
+        }
+        kick()
+    }
+
+    /** Fade everything out slowly. */
+    fun fadeAll() {
+        activeKey = null
+        for (s in slots) {
+            s.dying = true
+            s.target = 0f
+        }
+        kick()
+    }
+
+    /** Stop right now. */
+    fun stopNow() {
+        handler.removeCallbacks(ticker)
+        ticking = false
+        for (s in slots) killMp(s.mp)
+        slots.clear()
+        activeKey = null
+    }
+}
+
+/**
+ * SoundManager v4.
+ * - Short sounds go through a SoundPool and are placed in space (left/right, distance, behind).
+ * - Backgrounds are MediaPlayer beds that change with the zone and with day and night.
+ * - Sounds are loaded BY NAME, so one missing file can never silence all the others.
  */
 class SoundManager(context: Context) {
 
-    private val appContext = context.applicationContext
+    private val appContext: Context = context.applicationContext
+    private val handler = Handler(Looper.getMainLooper())
 
-    private val soundPool: SoundPool = SoundPool.Builder()
-        .setMaxStreams(16)
+    private val pool: SoundPool = SoundPool.Builder()
+        .setMaxStreams(24)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_GAME)
@@ -29,204 +158,209 @@ class SoundManager(context: Context) {
         )
         .build()
 
-    private val soundMap: Map<String, Int> = mapOf(
-        "gunshot" to R.raw.sfx_gunshot,
-        "shotgun" to R.raw.sfx_shotgun,
-        "sniper" to R.raw.sfx_sniper,
-        "mg" to R.raw.sfx_mg_shot,
-        "step_f1" to R.raw.sfx_step_f1,
+    private val sampleByKey = HashMap<String, Int>()
+    private val loaded = HashSet<Int>()
 
-        "enemy_step" to R.raw.sfx_enemy_step,
-        "enemy_shot" to R.raw.sfx_enemy_shot,
-        "eliminate" to R.raw.sfx_eliminate,
-        "death" to R.raw.sfx_death,
-        "grunt" to R.raw.sfx_grunt,
-        "gear" to R.raw.sfx_gear,
-        "breath" to R.raw.sfx_breath,
-        "briefing" to R.raw.voice_briefing,
-        "grenadecall" to R.raw.voice_grenade,
-        "crouch" to R.raw.sfx_crouch,
-        "stand" to R.raw.sfx_stand,
-        "pin" to R.raw.sfx_pin,
-        "bounce" to R.raw.sfx_bounce,
-        "explosion" to R.raw.sfx_explosion,
-        "tinnitus" to R.raw.sfx_tinnitus,
-        "heartbeat" to R.raw.sfx_heartbeat,
-        "reload" to R.raw.sfx_reload,
-        "pickup" to R.raw.sfx_pickup,
-        "click" to R.raw.sfx_click,
-        "melee" to R.raw.sfx_melee,
-        "heli" to R.raw.sfx_heli,
-        "win" to R.raw.sfx_win,
-        "lose" to R.raw.sfx_lose
+    private class Pending(
+        val sampleId: Int,
+        val left: Float,
+        val right: Float,
+        val rate: Float,
+        val priority: Int,
+        val at: Long
     )
 
-    private val sampleIdByKey = mutableMapOf<String, Int>()
-    private val pending = ArrayDeque<Triple<String, Float, Float>>() // key, pan, volume
-    private val expectedLoads = soundMap.size
-    private var loadedCount = 0
-    private var poolReady = false
+    private val pending = ArrayList<Pending>()
 
     init {
-        soundPool.setOnLoadCompleteListener { _, sampleId, status ->
+        pool.setOnLoadCompleteListener { _, sampleId, status ->
             if (status == 0) {
-                loadedCount++
-                if (loadedCount >= expectedLoads) {
-                    poolReady = true
-                    flush()
-                }
+                loaded.add(sampleId)
+                flushPending(sampleId)
             }
         }
-        soundMap.forEach { (key, resId) ->
-            sampleIdByKey[key] = soundPool.load(appContext, resId, 1)
+        for (key in KEYS) {
+            val id = appContext.resources.getIdentifier(key, "raw", appContext.packageName)
+            if (id != 0) {
+                sampleByKey[key] = pool.load(appContext, id, 1)
+            }
         }
     }
 
-    private fun flush() {
-        while (pending.isNotEmpty()) {
-            val (key, pan, vol) = pending.removeFirst()
-            doPlay(key, pan, vol)
+    private fun flushPending(sampleId: Int) {
+        val now = SystemClock.uptimeMillis()
+        val iter = pending.iterator()
+        while (iter.hasNext()) {
+            val p = iter.next()
+            if (p.sampleId == sampleId) {
+                if (now - p.at < 1500L) {
+                    pool.play(p.sampleId, p.left, p.right, p.priority, 0, p.rate)
+                }
+                iter.remove()
+            }
         }
-    }
-
-    private fun doPlay(key: String, pan: Float, volume: Float) {
-        val id = sampleIdByKey[key] ?: return
-        if (volume <= 0f) return
-        val left = (volume * (1f - maxOf(0f, pan))).coerceIn(0f, 1f)
-        val right = (volume * (1f - maxOf(0f, -pan))).coerceIn(0f, 1f)
-        soundPool.play(id, left, right, 1, 0, 1f)
-    }
-
-    private fun request(key: String, pan: Float, volume: Float) {
-        if (poolReady) doPlay(key, pan, volume) else pending.addLast(Triple(key, pan, volume))
-    }
-
-    fun play(key: String, volume: Float = 1f) = request(key, 0f, volume)
-
-    /** pan: -1 left, 0 center, +1 right. volume: 0..1. */
-    fun playSpatial(key: String, pan: Float, volume: Float) = request(key, pan, volume)
-
-    // ---- Footstep engine (v2.2): round-robin + anti-overlap cooldown ----
-    // v2.9: ONE verified heavy-boot soldier step (both feet use this exact
-    // clip). Stream id is tracked so steps can be cut INSTANTLY.
-    private var stepStreamId = 0
-    private var lastStepAt = 0L
-
-    /**
-     * Player footstep — the APPROVED ElevenLabs real-foley takes (A/B/C),
-     * +4dB boosted in the files themselves so they cut through ambience.
-     * - ROUND-ROBIN through the 3 variants (never the same twice in a row)
-     * - pitch variation ±0.05 (no robot-like repetition)
-     * - STRICT cooldown: a step shorter than `cooldownMs` after the last one
-     *   is DROPPED — sounds never stack into a dhol/double-hit effect
-     * - stream priority 2 (higher than other SFX) so ambience never masks it
-     * Independent of lanes/sensor mode: changing lane never interrupts it.
-     */
-    fun playFootstep(cooldownMs: Long = 500L) {
-        val now = System.currentTimeMillis()
-        if (now - lastStepAt < cooldownMs) return
-        lastStepAt = now
-        val id = sampleIdByKey["step_f1"] ?: return
-        // Single realistic clip on a repeating cadence; the stream id lets us
-        // CUT the step the exact millisecond movement stops (anti-dragging).
-        // EXACT same clip at base rate — both feet use this one sound,
-        // left-then-right feel comes from the strict 0.5s cadence alone.
-        stepStreamId = soundPool.play(id, 1.35f, 1.35f, 2, 0, 1.0f)
-    }
-
-    /** Finger lifted / stopWalking(): cut the in-flight step instantly so no
-     *  trailing or buffered tail ever plays after the player stops. */
-    fun stopStep() {
-        if (stepStreamId != 0) {
-            soundPool.stop(stepStreamId)
-            stepStreamId = 0
-        }
-    }
-
-    // ---- Zone ambience: dual-channel CROSSFADE (v2.3) ----
-    // Two MediaPlayer channels: the old bed fades OUT over ~2.5s while the
-    // new zone bed fades IN — no hard cut when crossing a zone boundary.
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var ambA: MediaPlayer? = null
-    private var ambB: MediaPlayer? = null
-    private var currentAmbKey: String? = null
-    private val fadeRunnables = mutableListOf<Runnable>()
-
-    private fun ambRes(key: String): Int? = when (key) {
-        "morning" -> R.raw.amb_morning   // Zone 1: early morning birds
-        "river" -> R.raw.amb_river       // Zone 2: mid-day stream
-        "forest" -> R.raw.amb_forest     // Zone 3: late-afternoon cicadas
-        "ridge" -> R.raw.amb_ridge       // Zone 4: dusk mountain wind
-        "night" -> R.raw.amb_night       // Zone 5: midnight camp tension
-        "desert" -> R.raw.amb_morning
-        "camp" -> R.raw.amb_night
-        else -> null
     }
 
     /**
-     * Smooth 2.5s crossfade to a zone's ambience bed.
-     * riverVol (0..1) is the DISTANCE ATTENUATION of the river: full volume
-     * near the stream, fading as the player walks away from Zone 2.
+     * Play a sound at a place. bearing is relative to where the player faces
+     * (0 = front, +90 = right, 180 = behind). distFt = how far away it is.
      */
-    fun crossfadeTo(ambKey: String, riverVol: Float = 1f) {
-        val res = ambRes(ambKey) ?: return
-        if (ambKey == currentAmbKey) return
-        cancelFades()
-        val old = ambA
-        ambA = try {
-            MediaPlayer.create(appContext, res)?.apply {
+    fun playAt(key: String, bearing: Float, distFt: Float, gain: Float = 1f, rate: Float = 1f) {
+        val id = sampleByKey[key] ?: return
+        val behind = Spatial.behind(bearing)
+        val vol = Spatial.distanceGain(distFt) * gain * (1f - 0.45f * behind)
+        if (vol <= 0.01f) return
+        val pan = Spatial.pan(bearing)
+        val l = Spatial.left(pan, vol)
+        val r = Spatial.right(pan, vol)
+        val rt = (rate * (1f - 0.07f * behind)).coerceIn(0.5f, 2f)
+        val prio = if (key.startsWith("ping_")) 3 else 1
+        if (loaded.contains(id)) {
+            pool.play(id, l, r, prio, 0, rt)
+        } else {
+            pending.add(Pending(id, l, r, rt, prio, SystemClock.uptimeMillis()))
+        }
+    }
+
+    /** A sound with no place: menus, countdown, results. */
+    fun playUi(key: String, gain: Float = 1f) {
+        playAt(key, 0f, 0f, gain, 1f)
+    }
+
+    // ------------------------------------------------------------ ambience
+    private val zoneLayer = AmbLayer(appContext, handler)
+    private val nightLayer = AmbLayer(appContext, handler)
+    private var ambienceOn = false
+    private var zoneId = 0
+    private var night = 0f
+    private var sirenPlayer: MediaPlayer? = null
+
+    fun setZone(id: Int) {
+        zoneId = id
+        ambienceOn = true
+        applyAmbience()
+        if (id == 4) startSiren() else stopSiren()
+    }
+
+    /** 0 = day, 1 = night. Called about once a second during a match. */
+    fun setNight(n: Float) {
+        night = n
+        if (ambienceOn) applyAmbience()
+    }
+
+    private fun applyAmbience() {
+        val z = Zones.list[zoneId]
+        zoneLayer.play(z.ambience, 0.26f * (1f - 0.55f * night))
+        if (zoneId != 4 && night > 0.05f) {
+            nightLayer.play("amb_night", 0.20f * night)
+        } else {
+            nightLayer.fadeAll()
+        }
+    }
+
+    fun stopAmbience() {
+        ambienceOn = false
+        zoneLayer.stopNow()
+        nightLayer.stopNow()
+        stopSiren()
+    }
+
+    private fun startSiren() {
+        if (sirenPlayer != null) return
+        val id = appContext.resources.getIdentifier("amb_airraid", "raw", appContext.packageName)
+        if (id == 0) return
+        sirenPlayer = try {
+            MediaPlayer.create(appContext, id)?.apply {
                 isLooping = true
-                setVolume(0f, 0f)
+                setVolume(0.2f, 0.2f)
                 start()
             }
         } catch (_: Exception) {
             null
         }
-        ambB = null
-        currentAmbKey = ambKey
-        val target = 0.24f * riverVol.coerceIn(0.15f, 1f)
-        // 6 fade steps x 500ms = 3.0s crossfade (v2.5 spec)
-        val steps = 6
-        for (i in 1..steps) {
-            val fIn = i / steps.toFloat()
-            val fOut = 1f - fIn
-            val r = Runnable {
-                ambA?.setVolume(target * fIn, target * fIn)
-                old?.setVolume(0.24f * fOut, 0.24f * fOut)
-                if (i == steps) {
-                    old?.release()
-                    old?.let { if (it == ambB) ambB = null }
+    }
+
+    private fun stopSiren() {
+        sirenPlayer?.let { killMp(it) }
+        sirenPlayer = null
+    }
+
+    // ------------------------------------------------------------ intro: helicopter, parachute, wind
+    private var heli: MediaPlayer? = null
+    private var heliStartMs = 0L
+    private var heliTick = 0
+    private var windStream = 0
+
+    private val heliTicker: Runnable = object : Runnable {
+        override fun run() {
+            val mp = heli ?: return
+            val t = (SystemClock.uptimeMillis() - heliStartMs) / 1000f
+            var vol = 0.35f + 0.65f * min(1f, t / 2f)
+            if (t > 6f) vol *= max(0.3f, 1f - (t - 6f) / 3f)
+            try {
+                mp.setVolume(vol, vol)
+            } catch (_: Exception) {
+            }
+            heliTick++
+            if (heliTick % 5 == 0) {
+                // The helicopter sounds higher while it is up in the sky and lower as you come down.
+                val pitch = 1.18f - 0.18f * min(1f, t / 5f)
+                try {
+                    mp.playbackParams = mp.playbackParams.setPitch(pitch)
+                } catch (_: Exception) {
                 }
             }
-            fadeRunnables += r
-            mainHandler.postDelayed(r, i * 500L)
+            handler.postDelayed(this, 100L)
         }
     }
 
-    private fun cancelFades() {
-        fadeRunnables.forEach { mainHandler.removeCallbacks(it) }
-        fadeRunnables.clear()
+    fun startIntro() {
+        stopIntro()
+        val id = appContext.resources.getIdentifier("sfx_heli", "raw", appContext.packageName)
+        if (id == 0) return
+        heli = try {
+            MediaPlayer.create(appContext, id)?.apply {
+                setVolume(0.35f, 0.35f)
+                start()
+            }
+        } catch (_: Exception) {
+            null
+        }
+        heliStartMs = SystemClock.uptimeMillis()
+        heliTick = 0
+        handler.removeCallbacks(heliTicker)
+        handler.postDelayed(heliTicker, 100L)
     }
 
-    fun stopAmbience() {
-        cancelFades()
-        ambA?.release(); ambA = null
-        ambB?.release(); ambB = null
-        currentAmbKey = null
+    fun stopIntro() {
+        handler.removeCallbacks(heliTicker)
+        heli?.let { killMp(it) }
+        heli = null
     }
 
-    /** Stop everything: ambience loop + any playing SFX. Used on game over, win, and onPause. */
-    /**
-     * HQ briefing on a DEDICATED MediaPlayer — SoundPool clips can be cut by
-     * stream limits, so the walkie-talkie line gets its own reliable channel
-     * at full volume. Called on every match start (fresh instance each time).
-     */
-    private var briefingPlayer: MediaPlayer? = null
+    fun startWind() {
+        stopWind()
+        val id = sampleByKey["sfx_wind_fall"] ?: return
+        if (!loaded.contains(id)) return
+        windStream = pool.play(id, 0.5f, 0.5f, 2, -1, 1f)
+    }
+
+    fun stopWind() {
+        if (windStream != 0) {
+            pool.stop(windStream)
+            windStream = 0
+        }
+    }
+
+    // ------------------------------------------------------------ HQ briefing (the commander's voice only)
+    private var briefing: MediaPlayer? = null
 
     fun playBriefing() {
-        briefingPlayer?.release()
-        briefingPlayer = try {
-            MediaPlayer.create(appContext, R.raw.voice_briefing)?.apply {
+        stopBriefing()
+        val id = appContext.resources.getIdentifier("voice_briefing", "raw", appContext.packageName)
+        if (id == 0) return
+        briefing = try {
+            MediaPlayer.create(appContext, id)?.apply {
                 setVolume(1f, 1f)
                 start()
             }
@@ -235,41 +369,64 @@ class SoundManager(context: Context) {
         }
     }
 
-    // ---- Zone 5 INTRUDER SIREN: loud continuous loop, only while in camp ----
-    private var sirenPlayer: MediaPlayer? = null
+    fun stopBriefing() {
+        briefing?.let { killMp(it) }
+        briefing = null
+    }
 
-    fun startSiren() {
-        if (sirenPlayer != null) return
-        // v2.8 REDESIGN: deep air-raid clip (verified "resonant, distant, no
-        // toy beep"). LOW volume — it must echo from across the map, not sit
-        // in the player's ear. The clip itself carries the distance modeling.
-        sirenPlayer = try {
-            MediaPlayer.create(appContext, R.raw.amb_airraid)?.apply {
-                isLooping = true
-                setVolume(0.22f, 0.22f) // low/medium per spec
-                start()
-            }
-        } catch (_: Exception) {
-            null
+    // ------------------------------------------------------------ lifecycle
+    /** Home button or phone call: everything goes silent. */
+    fun suspend() {
+        stopIntro()
+        stopWind()
+        stopBriefing()
+        zoneLayer.stopNow()
+        nightLayer.stopNow()
+        stopSiren()
+        pool.autoPause()
+    }
+
+    /** Back in the game: the ambience starts again (it used to stay silent after a pause). */
+    fun resumeFromSuspend() {
+        pool.autoResume()
+        if (ambienceOn) {
+            applyAmbience()
+            if (zoneId == 4) startSiren()
         }
     }
 
-    fun stopSiren() {
-        sirenPlayer?.release()
-        sirenPlayer = null
-    }
-
     fun stopAll() {
+        stopIntro()
+        stopWind()
+        stopBriefing()
         stopAmbience()
-        stopSiren()
-        briefingPlayer?.release()
-        briefingPlayer = null
-        soundPool.autoPause()
     }
 
     fun release() {
-        soundPool.setOnLoadCompleteListener(null)
-        soundPool.release()
-        stopAmbience()
+        stopAll()
+        pool.setOnLoadCompleteListener(null)
+        pool.release()
+    }
+
+    companion object {
+        val KEYS: List<String> = listOf(
+        "ping_attack_grenade", "ping_attack_gun", "ping_attack_melee", "ping_enemy_new",
+        "ping_hit", "ping_kill", "ping_lock", "sfx_bounce", "sfx_breath", "sfx_click",
+        "sfx_crouch", "sfx_death", "sfx_dodge_slide", "sfx_dry_fire", "sfx_enemy_axe_swing",
+        "sfx_enemy_bat_swing", "sfx_enemy_knife_swing", "sfx_enemy_pain", "sfx_enemy_step",
+        "sfx_enemy_step_heavy", "sfx_enemy_step_light", "sfx_explosion", "sfx_gear", "sfx_grunt",
+        "sfx_gunshot", "sfx_heartbeat", "sfx_heli_leave", "sfx_hit_mg", "sfx_hit_pistol",
+        "sfx_hit_shotgun", "sfx_hit_sniper", "sfx_jump", "sfx_land_thud", "sfx_lose",
+        "sfx_mg_shot", "sfx_miss_dirt_1", "sfx_miss_dirt_2", "sfx_miss_metal", "sfx_miss_rock_1",
+        "sfx_miss_rock_2", "sfx_miss_water_1", "sfx_miss_water_2", "sfx_miss_wood_1",
+        "sfx_miss_wood_2", "sfx_parachute_open", "sfx_pickup", "sfx_pin", "sfx_player_hurt_1",
+        "sfx_player_hurt_2", "sfx_reload_mg", "sfx_reload_pistol", "sfx_reload_shotgun",
+        "sfx_reload_sniper", "sfx_shotgun", "sfx_sniper", "sfx_stand", "sfx_step_grass_1",
+        "sfx_step_grass_2", "sfx_step_leaves_1", "sfx_step_leaves_2", "sfx_step_metal_1",
+        "sfx_step_metal_2", "sfx_step_rock_1", "sfx_step_rock_2", "sfx_step_water_1",
+        "sfx_step_water_2", "sfx_tinnitus", "sfx_wall_bump", "sfx_weapon_switch", "sfx_win",
+        "sfx_wind_fall", "ui_back", "ui_countdown_go", "ui_countdown_tick", "ui_locked",
+        "ui_start", "ui_talkback_alert", "ui_toggle_off", "ui_toggle_on", "voice_grenade"
+        )
     }
 }

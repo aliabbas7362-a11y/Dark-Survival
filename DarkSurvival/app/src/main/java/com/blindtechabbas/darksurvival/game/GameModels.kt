@@ -1,206 +1,206 @@
 package com.blindtechabbas.darksurvival.game
 
-/** Weapon system — order: Pistol, Shotgun, Sniper, Machine Gun (cycle). */
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
+
+/**
+ * Dark Survival v4.0 - "Survive 24 Hours".
+ * Every number that can be tuned lives here. Distances are in FEET, times in
+ * seconds or milliseconds as the name says. This file has NO Android code,
+ * so the game rules stay separate from sound, screens and touch.
+ */
+object Cfg {
+    const val HALF_WIDTH = 150f          // map is 300 feet wide: x from -150 to +150
+    const val MAP_LENGTH = 1000f         // and 1000 feet long: y from 0 to 1000
+    const val MATCH_SECONDS = 600f       // 10 real minutes = 24 game hours
+    const val START_HOUR = 6f
+    const val TICK_MS = 100L
+
+    const val WALK_FPS = 6f              // feet per second, forward
+    const val BACK_FPS = 3f
+    const val MOVE_START_MS = 150L       // finger must stay down this long before walking starts
+    const val FLICK_TURN_DEG = 30f
+    const val STEER_DEG_PER_PX = 0.15f
+
+    const val START_HP = 100
+    const val START_RATIONS = 3
+    const val HEAL_AMOUNT = 30
+    const val RESERVE_MAGS = 3           // spare magazines for every weapon
+
+    const val WARNING_MS = 3000L         // warning before an enemy attack lands
+    const val SWING_LEAD_MS = 800L       // melee swing sound this long before impact
+    const val JUMP_MS = 1000L
+    const val JUMP_COOLDOWN_MS = 1500L
+
+    const val FINAL_HUNT_SECONDS = 480f  // last 2 minutes: every enemy hunts the player
+    const val GRENADE_FUSE_MS = 3000L
+    const val GRENADE_DAMAGE = 35
+    const val GRENADE_RADIUS = 30f
+
+    const val HEAR_ENEMY_FT = 150f       // you hear enemies this far
+    const val STEP_NOISE_FT = 120f       // enemies hear your footsteps this far
+    const val SIGHT_FT = 70f             // enemy notices you this close
+    const val SIGHT_CROUCH_FT = 25f      // ...and this close when you crouch
+}
+
 enum class WeaponType(
-    val displayName: String,
-    val maxAmmo: Int,
+    val label: String,
+    val rangeFt: Float,
+    val dmgNear: Int,
+    val dmgFar: Int,
+    val shotsPerSec: Float,
+    val magSize: Int,
+    val coneDeg: Float,
+    val fireKey: String,
+    val reloadKey: String,
+    val hitKey: String,
+    val reloadMs: Long,
+    val noiseFt: Float,
+    val pellets: Boolean
+) {
+    PISTOL("Pistol", 80f, 15, 8, 3f, 12, 12f, "sfx_gunshot", "sfx_reload_pistol", "sfx_hit_pistol", 1300L, 300f, false),
+    SHOTGUN("Shotgun", 40f, 45, 10, 1.3f, 6, 25f, "sfx_shotgun", "sfx_reload_shotgun", "sfx_hit_shotgun", 2200L, 350f, true),
+    SNIPER("Sniper", 400f, 70, 70, 0.8f, 5, 4f, "sfx_sniper", "sfx_reload_sniper", "sfx_hit_sniper", 2400L, 600f, false),
+    MACHINE_GUN("Machine Gun", 150f, 8, 5, 7f, 30, 10f, "sfx_mg_shot", "sfx_reload_mg", "sfx_hit_mg", 2800L, 400f, false)
+}
+
+enum class EnemyKind(
+    val label: String,
+    val hp: Int,
+    val speedFps: Float,
+    val stepKey: String,
+    val stepEvery: Float
+) {
+    RUSHER("Rusher", 30, 9f, "sfx_enemy_step_light", 0.28f),
+    FLANKER("Flanker", 50, 6f, "sfx_enemy_step", 0.45f),
+    TANK("Tank", 110, 3.5f, "sfx_enemy_step_heavy", 0.75f)
+}
+
+enum class EnemyWeapon(
+    val label: String,
+    val melee: Boolean,
+    val rangeFt: Float,
     val damage: Int,
-    val fireSound: String,
-    val reloadSound: String
+    val sound: String
 ) {
-    PISTOL("Pistol", 12, 15, "gunshot", "reload"),
-    SHOTGUN("Shotgun", 6, 35, "shotgun", "reload"),
-    SNIPER("Sniper", 5, 60, "sniper", "reload"),
-    MACHINE_GUN("Machine Gun", 30, 7, "mg", "reload")
+    KNIFE("Knife", true, 8f, 8, "sfx_enemy_knife_swing"),
+    BAT("Bat", true, 8f, 11, "sfx_enemy_bat_swing"),
+    AXE("Axe", true, 9f, 14, "sfx_enemy_axe_swing"),
+    PISTOL("Pistol", false, 80f, 8, "sfx_gunshot")      // SAME sound as the player's pistol
 }
 
-/** Vehicle system — motorbike / car / helicopter. */
-enum class VehicleType(val displayName: String, val speed: Int, val armor: Int) {
-    MOTORBIKE("Motorbike", 3, 0),
-    CAR("Car", 2, 2),
-    HELICOPTER("Helicopter", 4, 1)
-}
+enum class AiState { PATROL, ALERT, HUNT, RETREAT }
 
-/** Enemy types — Level 1 humans, Level 2 humans + animals. */
-enum class EnemyType(val displayName: String, val health: Int, val damage: Int) {
-    HUMAN("Human", 50, 10),
-    WOLF("Wolf", 25, 12),
-    SNAKE("Snake", 15, 20),
-    LARGE_ANIMAL("Large Animal", 100, 25)
-}
-
-/** Speed control — walk / sprint (stamina) / sneak (silent). */
-enum class MovementMode { WALK, SPRINT, SNEAK }
-
-/**
- * Lane — v1.6 combat model. Player and every enemy occupy one of three
- * lanes (left / center / right). FIRE hits only enemies in the player's
- * current lane, so the player must move to the enemy's lane to kill it.
- */
-enum class Lane(val displayName: String) {
-    LEFT("left"),
-    CENTER("center"),
-    RIGHT("right")
-}
-
-/** Move one lane left (-1) or right (+1) with WRAP-AROUND: the lanes loop
- *  like music tracks — Right->Center->Left->Right… and back. */
-fun Lane.move(delta: Int): Lane {
-    val size = Lane.entries.size
-    val idx = ((Lane.entries.indexOf(this) + delta) % size + size) % size
-    return Lane.entries[idx]
-}
-
-fun Lane.label(): String = displayName
-
-/** 3D spatial direction (kept for future use). */
-enum class Direction { FRONT, LEFT, RIGHT, BEHIND }
-
-/** Spoken label for a direction (used in HUD + announcements). */
-fun Direction.label(): String = when (this) {
-    Direction.FRONT -> "front"
-    Direction.LEFT -> "left"
-    Direction.RIGHT -> "right"
-    Direction.BEHIND -> "behind"
-}
-
-/** Maps from the design doc. */
-enum class MapType(val displayName: String) {
-    RIVERBANK("Riverbank - Day"),
-    DESERT("Desert - Night")
-}
-
-data class Player(
-    val health: Int = 100,
-    val maxHealth: Int = 100,
-    val stamina: Int = 100,
-    val weapon: WeaponType = WeaponType.PISTOL,
-    val ammo: Int = 12,
-    val hasMedkit: Boolean = true,
-    val rationCount: Int = 3,
-    val crouching: Boolean = false,
-    val inCover: Boolean = false,
-    val vehicle: VehicleType? = null,
-    val movement: MovementMode = MovementMode.WALK,
-    /** Current combat lane — changed by swipe/tilt. */
-    val lane: Lane = Lane.CENTER,
-    /** Linear path progress along the 5-zone map (0=drop point, 100=enemy camp). */
-    val progress: Int = 0,
-    /** While now < dodgeUntilMs the player is briefly invulnerable. */
-    val dodgeUntilMs: Long = 0L
-)
-
-/** Enemy carry-weapons — each with its OWN range / damage / speed (v2.3). */
-enum class EnemyWeaponType(
-    val displayName: String,
-    val range: Float,
-    val dmg: Int,
-    val speedMul: Float,
-    val fireSound: String
-) {
-    KNIFE("Knife", 0.22f, 8, 1.3f, "melee"),
-    AXE("Axe", 0.26f, 14, 1.0f, "melee"),
-    BAT("Bat", 0.24f, 11, 1.1f, "melee"),
-    PISTOL("Pistol", 0.34f, 9, 1.0f, "gunshot")
-}
-
-/** AI behaviour archetypes — Rusher / Tactical-Flanker / Tank (v2.3). */
-enum class AiArchetype(val displayName: String, val speedMul: Float, val hpMul: Float, val dmgMul: Float) {
-    RUSHER("Rusher", 1.6f, 0.6f, 0.8f),
-    TACTICAL("Flanker", 1.0f, 1.0f, 1.0f),
-    TANK("Tank", 0.6f, 2.2f, 1.6f)
-}
-
-/** Enemy AI state machine — Patrol → Alert → Hunt (v2.4). */
-enum class AiState { PATROL, ALERT, HUNT }
-
-/**
- * Fixed 13-enemy zone spawn table (v2.4):
- * Zone 1 drop point: 1 patrol · Zone 2 river: 2 guards · Zone 3 forest:
- * 3 hunters/rushers · Zone 4 ridge: 3 tactical · Zone 5 camp: 4 heavies.
- */
-val ZONE_SPAWNS: List<Pair<Int, AiArchetype>> = listOf(
-    1 to AiArchetype.TACTICAL,
-    1 to AiArchetype.TACTICAL,
-    2 to AiArchetype.RUSHER,
-    2 to AiArchetype.RUSHER,
-    2 to AiArchetype.RUSHER,
-    3 to AiArchetype.TACTICAL,
-    3 to AiArchetype.TACTICAL,
-    3 to AiArchetype.TACTICAL,
-    4 to AiArchetype.TANK,
-    4 to AiArchetype.TANK,
-    4 to AiArchetype.TANK,
-    4 to AiArchetype.TANK
-)
-
-const val TOTAL_ENEMIES = 12
-
-/** Linear map zones along one north-to-south path (v2.3 level design). */
-data class MapZone(
+class ZoneDef(
     val id: Int,
     val name: String,
-    val start: Int,
-    val end: Int,
-    val ambKey: String
+    val startFt: Float,
+    val endFt: Float,
+    val stepKey: String,
+    val missKey: String,
+    val ambience: String
 )
 
-val MAP_ZONES = listOf(
-    MapZone(0, "Helicopter Drop Point", 0, 14, "morning"),
-    MapZone(1, "River Bank", 15, 39, "river"),
-    MapZone(2, "Deep Forest", 40, 64, "forest"),
-    MapZone(3, "Rocky Ridge", 65, 84, "ridge"),
-    MapZone(4, "Enemy Camp", 85, 100, "night")
-)
+object Zones {
+    val list: List<ZoneDef> = listOf(
+        ZoneDef(0, "Drop Point", 0f, 150f, "sfx_step_grass", "sfx_miss_dirt", "amb_morning"),
+        ZoneDef(1, "River Bank", 150f, 400f, "sfx_step_water", "sfx_miss_water", "amb_river"),
+        ZoneDef(2, "Deep Forest", 400f, 650f, "sfx_step_leaves", "sfx_miss_wood", "amb_forest"),
+        ZoneDef(3, "Rocky Ridge", 650f, 850f, "sfx_step_rock", "sfx_miss_rock", "amb_ridge"),
+        ZoneDef(4, "Enemy Camp", 850f, 1000f, "sfx_step_metal", "sfx_miss_dirt", "amb_night")
+    )
 
-fun zoneForProgress(p: Int): Int = MAP_ZONES.first { p >= it.start && p <= it.end }.id
+    fun forY(y: Float): ZoneDef {
+        for (z in list) {
+            if (y < z.endFt) return z
+        }
+        return list[list.size - 1]
+    }
+}
 
-data class Enemy(
+/** One enemy. Mutable on purpose: the match engine updates it every tick. */
+class Enemy(
     val id: Int,
-    val type: EnemyType,
-    val health: Int,
-    /** 1.5 = far, shrinks every tick; weapon.range = engagement range. */
-    val distance: Float,
-    /** Which lane this enemy attacks from. */
-    val lane: Lane,
-    /** Set when the enemy telegraphs its attack — damage begins ~2s later. */
-    val attackStartMs: Long = 0L,
-    /** Per-instance approach speed (already includes weapon+archetype multipliers). */
-    val speed: Float = 0.04f,
-    /** Seconds between this enemy's repeat attacks (1.6..3.4). */
-    val attackInterval: Float = 2.5f,
-    /** v2.0 — each enemy carries its OWN weapon (unique range/damage/speed). */
-    val weapon: EnemyWeaponType = EnemyWeaponType.PISTOL,
-    /** v2.3 — AI archetype: Rusher / Tactical-Flanker / Tank. */
-    val archetype: AiArchetype = AiArchetype.TACTICAL,
-    /** v2.4 — which map zone this enemy belongs to (0..4). */
-    val zone: Int = 0,
-    /** v2.4 — AI state machine: Patrol → Alert → Hunt. */
-    val aiState: AiState = AiState.PATROL
-)
+    val kind: EnemyKind,
+    val weapon: EnemyWeapon,
+    var x: Float,
+    var y: Float,
+    val homeZone: Int
+) {
+    var hp: Int = kind.hp
+    var state: AiState = AiState.PATROL
+    var targetX: Float = x
+    var targetY: Float = y
+    var patrolTimer: Float = 0f
+    var stepTimer: Float = 0f
+    var attackAtMs: Long = 0L        // 0 = no attack being prepared
+    var swingPlayed: Boolean = false
+    var nextAttackMs: Long = 0L
+    var announced: Boolean = false
+    var alertUntilMs: Long = 0L
+    var retreatUntilMs: Long = 0L
+    var retreated: Boolean = false
+    var flankSide: Float = 1f
+    var grenadeAtMs: Long = 0L
+    var lastCueMs: Long = -10000L
 
-data class Chapter(
-    val id: Int,
-    val title: String,
-    val map: MapType,
-    val unlockWeapon: WeaponType?,
-    val unlockVehicle: VehicleType?,
-    val description: String
-)
+    val alive: Boolean
+        get() = hp > 0
+}
 
-val CHAPTERS = listOf(
-    Chapter(1, "Chapter 1 - First Steps", MapType.RIVERBANK, WeaponType.PISTOL, null,
-        "Basic pistol, few enemies, explore the map."),
-    Chapter(2, "Chapter 2 - Shotgun", MapType.RIVERBANK, WeaponType.SHOTGUN, VehicleType.MOTORBIKE,
-        "Shotgun unlocked, more enemies, motorbike found."),
-    Chapter(3, "Chapter 3 - Sniper", MapType.RIVERBANK, WeaponType.SNIPER, VehicleType.CAR,
-        "Sniper unlocked, smarter enemies, car found."),
-    Chapter(4, "Chapter 4 - Machine Gun", MapType.RIVERBANK, WeaponType.MACHINE_GUN, null,
-        "Machine gun unlocked, heavy firepower."),
-    Chapter(5, "Chapter 5 - HQ Raid", MapType.RIVERBANK, null, VehicleType.HELICOPTER,
-        "Raid the HQ, grab the helicopter, fly away."),
-    Chapter(6, "Chapter 6 - Desert Night", MapType.DESERT, null, null,
-        "Desert map, old weapons, animals appear."),
-    Chapter(7, "Chapter 7 - Ambush", MapType.DESERT, null, null,
-        "Room ambushes, night insects signal enemies.")
-)
+class Grenade(val x: Float, val y: Float, val explodeAtMs: Long) {
+    var bounced: Boolean = false
+}
+
+/** What the match engine tells the rest of the app. The engine never plays sound itself. */
+sealed class GameEvent {
+    /** A sound at a place: bearing is relative to where the player faces (0 = front, + = right). */
+    class Sfx(
+        val key: String,
+        val bearing: Float,
+        val distFt: Float,
+        val gain: Float = 1f,
+        val rate: Float = 1f
+    ) : GameEvent()
+
+    /** A spoken line. priority 1 = critical, 2 = combat, 3 = information. */
+    class Say(val text: String, val priority: Int) : GameEvent()
+
+    /** kind: 0 = player hurt, 1 = enemy killed, 2 = grenade. */
+    class Haptic(val kind: Int) : GameEvent()
+
+    class ZoneChanged(val zone: Int) : GameEvent()
+
+    class MatchOver(val won: Boolean, val reason: String) : GameEvent()
+}
+
+// ---------------------------------------------------------------- helpers
+
+fun norm180(a: Float): Float {
+    var x = a % 360f
+    if (x > 180f) x -= 360f
+    if (x < -180f) x += 360f
+    return x
+}
+
+/** Bearing of the vector (dx, dy) in degrees: 0 = straight along +y, positive = toward +x. */
+fun bearingOf(dx: Float, dy: Float): Float {
+    return (atan2(dx.toDouble(), dy.toDouble()) * 180.0 / PI).toFloat()
+}
+
+fun roundFeet(d: Float): Int {
+    val r = ((d / 5f) + 0.5f).toInt() * 5
+    return if (r < 5) 5 else r
+}
+
+fun dirWord(b: Float): String {
+    val a = abs(b)
+    return when {
+        a <= 22.5f -> "front"
+        a <= 67.5f -> if (b > 0f) "front right" else "front left"
+        a <= 112.5f -> if (b > 0f) "right" else "left"
+        a <= 157.5f -> if (b > 0f) "back right" else "back left"
+        else -> "back"
+    }
+}
